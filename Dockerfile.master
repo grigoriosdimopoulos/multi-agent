@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps for chromadb / pypdf
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Build React frontend if sources exist
+RUN if [ -d master/frontend ] && [ -f master/frontend/package.json ]; then \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    cd master/frontend && npm ci && npm run build; \
+    fi
+
+EXPOSE 8000
+
+CMD ["uvicorn", "master.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

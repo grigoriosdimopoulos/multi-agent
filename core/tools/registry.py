@@ -10,6 +10,12 @@ from .base import BaseTool
 from .file_tools import ListDirectoryTool, ReadFileTool, SearchInFilesTool, WriteFileTool
 from .web_tools import FetchWebPageTool, HTTPRequestTool
 from .code_tools import ExecutePythonTool, ExecuteShellTool
+from .office_tools import (
+    ReadExcelTool, WriteExcelTool,
+    ReadWordTool, WriteWordTool,
+    ReadPDFTool,
+    ReadCSVTool, WriteCSVTool,
+)
 
 
 class ToolRegistry:
@@ -24,14 +30,25 @@ class ToolRegistry:
     # ------------------------------------------------------------------
     def _register_defaults(self) -> None:
         for tool in [
+            # File system
             ReadFileTool(),
             WriteFileTool(),
             ListDirectoryTool(),
             SearchInFilesTool(),
+            # Web
             FetchWebPageTool(),
             HTTPRequestTool(),
+            # Code execution
             ExecutePythonTool(),
             ExecuteShellTool(),
+            # Office / data files
+            ReadExcelTool(),
+            WriteExcelTool(),
+            ReadWordTool(),
+            WriteWordTool(),
+            ReadPDFTool(),
+            ReadCSVTool(),
+            WriteCSVTool(),
         ]:
             self.register(tool)
 

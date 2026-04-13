@@ -1,0 +1,42 @@
+# ============================================================
+# System-wide configuration
+# ============================================================
+# Most values here can be overridden via environment variables.
+# Environment variables always take precedence.
+# ============================================================
+
+master:
+  host: "0.0.0.0"
+  port: 8000
+  # Comma-separated origins allowed to access the API
+  cors_origins: "http://localhost:3000,http://localhost:5173"
+  # Set to a comma-separated list of keys to enable auth
+  # Leave empty for open access (development)
+  api_keys: ""
+
+node:
+  heartbeat_interval: 15    # seconds
+  task_timeout: 300          # max seconds a task can run
+
+redis:
+  url: "redis://localhost:6379"
+  task_result_ttl: 86400     # seconds (1 day)
+
+knowledge:
+  chroma_dir: "./data/chroma"
+  default_collection: "default"
+  chunk_size: 1000
+  chunk_overlap: 200
+
+security:
+  rate_limit_requests: 60    # per window
+  rate_limit_window: 60      # seconds
+  # Colon-separated list of directories agents may read/write
+  # Leave empty to allow the current working directory
+  allowed_dirs: ""
+  # Shared secret for node ↔ master authentication
+  node_shared_secret: ""
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

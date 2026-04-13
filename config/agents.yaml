@@ -1,0 +1,113 @@
+# ============================================================
+# Agent & Chain configuration
+# ============================================================
+# Each entry under 'agents' is loaded on startup by both the
+# master server and every node worker.
+#
+# Provider types:  ollama | openai | anthropic | groq
+# Tool names:      read_file, write_file, list_directory, search_in_files,
+#                  fetch_webpage, http_request,
+#                  execute_python, execute_shell,
+#                  read_excel, write_excel, read_word, write_word,
+#                  read_pdf, read_csv, write_csv,
+#                  query_knowledge_base
+# Privilege levels: 0=READ_ONLY  1=STANDARD  2=ELEVATED  3=ADMIN
+# ============================================================
+
+agents:
+
+  # --- Free local agent (Ollama — zero cost) -------------------
+  - id: local-assistant
+    name: "Local Assistant"
+    description: "General-purpose agent running on Ollama (free, local)"
+    provider:
+      type: ollama
+      model: llama3.2
+      base_url: "http://localhost:11434"   # override with OLLAMA_HOST env var
+    tools:
+      - read_file
+      - write_file
+      - list_directory
+      - search_in_files
+      - fetch_webpage
+      - read_excel
+      - read_word
+      - read_pdf
+      - read_csv
+      - query_knowledge_base
+    system_prompt: |
+      You are a helpful AI assistant with access to tools.
+      When you need to read files or search the web, use the available tools.
+      Always cite your sources when referencing documents.
+    temperature: 0.7
+    privilege_level: 1   # STANDARD
+    knowledge_collection: default
+    tags: [local, general]
+
+  # --- Code / shell agent (requires elevated privileges) -------
+  - id: code-agent
+    name: "Code Agent"
+    description: "Executes Python and shell commands — use with care"
+    provider:
+      type: ollama
+      model: codellama
+      base_url: "http://localhost:11434"
+    tools:
+      - read_file
+      - write_file
+      - execute_python
+      - execute_shell
+      - list_directory
+    system_prompt: |
+      You are an expert software engineer.
+      You can read files, write code, and execute Python or shell commands.
+      Always explain what you are doing before running commands.
+    temperature: 0.2
+    privilege_level: 2   # ELEVATED
+
+  # --- OpenAI agent (requires OPENAI_API_KEY in .env) ----------
+  # - id: gpt-agent
+  #   name: "GPT-4o Agent"
+  #   provider:
+  #     type: openai
+  #     model: gpt-4o-mini
+  #     api_key: "${OPENAI_API_KEY}"
+  #   tools:
+  #     - fetch_webpage
+  #     - http_request
+  #     - read_file
+  #     - query_knowledge_base
+  #   system_prompt: "You are a helpful assistant."
+  #   temperature: 0.7
+  #   privilege_level: 1
+
+  # --- Anthropic agent (requires ANTHROPIC_API_KEY in .env) ----
+  # - id: claude-agent
+  #   name: "Claude Agent"
+  #   provider:
+  #     type: anthropic
+  #     model: claude-sonnet-4-6
+  #     api_key: "${ANTHROPIC_API_KEY}"
+  #   tools: [fetch_webpage, read_file, query_knowledge_base]
+  #   temperature: 0.7
+  #   privilege_level: 1
+
+# ============================================================
+# Chains
+# ============================================================
+
+chains:
+
+  # Research → Summarise → Format sequential chain
+  - chain_id: research-chain
+    mode: sequential
+    agent_ids:
+      - local-assistant   # Step 1: research / gather info
+      - local-assistant   # Step 2: summarise (re-uses same agent for demo)
+
+  # Parallel analysis (all agents run the same query, merge)
+  # - chain_id: parallel-analysis
+  #   mode: parallel
+  #   agent_ids:
+  #     - local-assistant
+  #     - gpt-agent

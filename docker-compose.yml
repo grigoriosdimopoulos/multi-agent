@@ -1,0 +1,124 @@
+version: "3.9"
+
+# ============================================================
+# Multi-Agent AI System — Docker Compose
+#
+# Services:
+#   redis    — message broker (tasks + pub/sub)
+#   master   — FastAPI control plane + React UI
+#   node     — worker node (runs agents locally)
+#   ollama   — local LLM server (free, runs on CPU or GPU)
+#
+# Quick start:
+#   cp .env.example .env
+#   docker-compose up
+#   open http://localhost:3000
+# ============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # Redis — task queue + pub/sub backbone
+  # ----------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------
+  # Ollama — free local LLM inference
+  # ----------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    # Uncomment to use NVIDIA GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ----------------------------------------------------------
+  # Master — control plane + web UI
+  # ----------------------------------------------------------
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile.master
+    restart: unless-stopped
+    ports:
+      - "8000:8000"     # API
+      - "3000:3000"     # Vite dev (only if running dev server separately)
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      CHROMA_DIR: /data/chroma
+      AGENTS_CONFIG: /app/config/agents.yaml
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - chroma-data:/data/chroma
+      - ./config:/app/config:ro
+      - ./workspace:/app/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------
+  # Node worker — distributed execution
+  # ----------------------------------------------------------
+  node:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      master:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      MASTER_URL: http://master:8000
+      CHROMA_DIR: /data/chroma
+      OLLAMA_HOST: http://ollama:11434
+      NODE_ID: node-1
+      NODE_HOST: node
+      NODE_PORT: "8001"
+    volumes:
+      - chroma-data:/data/chroma
+      - ./config:/app/config:ro
+      - ./workspace:/app/workspace
+
+# ----------------------------------------------------------
+# Volumes
+# ----------------------------------------------------------
+volumes:
+  redis-data:
+  ollama-models:
+  chroma-data:
