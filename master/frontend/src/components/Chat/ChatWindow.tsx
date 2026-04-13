@@ -2,9 +2,6 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import type { ChatMessage, Agent, Chain } from '../../types'
 import { MessageBubble } from './MessageBubble'
 import { InputBar } from './InputBar'
-import { api } from '../../api/client'
-import { v4 as uuid } from 'crypto'
-
 // Simple UUID without crypto dependency
 function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36) }
 
@@ -28,6 +25,8 @@ export function ChatWindow({ agents, chains, streamingTokens, sessionId }: Props
   const [selectedChainId, setSelectedChainId] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  /** Batches SSE token updates to one setState per animation frame (fewer React repaints). */
+  const streamFlushRafRef = useRef<number | null>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -67,8 +66,13 @@ export function ChatWindow({ agents, chains, streamingTokens, sessionId }: Props
     }
     setMessages(prev => [...prev, placeholder])
 
+    if (streamFlushRafRef.current != null) {
+      cancelAnimationFrame(streamFlushRafRef.current)
+      streamFlushRafRef.current = null
+    }
+
     try {
-      // Use SSE for streaming
+      // Same-origin `/api` in dev (Vite streams chat via middleware) and in prod (FastAPI).
       const key = localStorage.getItem('api_key') ?? ''
       const res = await fetch('/api/chat/', {
         method: 'POST',
@@ -85,35 +89,122 @@ export function ChatWindow({ agents, chains, streamingTokens, sessionId }: Props
         }),
       })
 
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) {
+        const text = await res.text()
+        let msg = `HTTP ${res.status}`
+        try {
+          const j = JSON.parse(text) as { detail?: string }
+          if (typeof j.detail === 'string') msg = j.detail
+        } catch {
+          /* ignore */
+        }
+        if (res.status === 401) {
+          msg +=
+            ' Use the Key field in the header (same value as MASTER_API_KEYS in .env), or remove/empty MASTER_API_KEYS for open local dev.'
+        }
+        throw new Error(msg)
+      }
+      if (!res.body) throw new Error('No response body')
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let accumulated = ''
+      let lineBuf = ''
+      let sawDone = false
+
+      const applyError = (msg: string) => {
+        if (streamFlushRafRef.current != null) {
+          cancelAnimationFrame(streamFlushRafRef.current)
+          streamFlushRafRef.current = null
+        }
+        setMessages(prev =>
+          prev.map(m =>
+            m.taskId === taskId
+              ? { ...m, content: msg, streaming: false }
+              : m
+          )
+        )
+      }
+
+      const processSseLine = (line: string) => {
+        if (!line.startsWith('data:')) return
+        const raw = line.slice(5).trimStart()
+        if (!raw) return
+        let ev: { event?: string; token?: string; error?: string; task_id?: string; tool?: string; arguments?: Record<string, unknown> }
+        try {
+          ev = JSON.parse(raw)
+        } catch {
+          return
+        }
+        if (ev.event === 'error') {
+          applyError(ev.error ?? 'Unknown error')
+          sawDone = true
+          return
+        }
+        if (ev.event === 'thinking' && ev.tool) {
+          const argStr = ev.arguments ? ` ${JSON.stringify(ev.arguments)}` : ''
+          accumulated += `\n> **Tool:** \`${ev.tool}\`${argStr}\n\n`
+          setMessages(prev =>
+            prev.map(m => (m.taskId === taskId ? { ...m, content: accumulated } : m))
+          )
+          return
+        }
+        if (ev.event === 'token' && typeof ev.token === 'string') {
+          accumulated += ev.token
+          if (streamFlushRafRef.current == null) {
+            streamFlushRafRef.current = requestAnimationFrame(() => {
+              streamFlushRafRef.current = null
+              const t = accumulated
+              setMessages(prev =>
+                prev.map(m => (m.taskId === taskId ? { ...m, content: t } : m))
+              )
+            })
+          }
+        } else if (ev.event === 'done') {
+          if (streamFlushRafRef.current != null) {
+            cancelAnimationFrame(streamFlushRafRef.current)
+            streamFlushRafRef.current = null
+          }
+          sawDone = true
+          setMessages(prev =>
+            prev.map(m =>
+              m.taskId === taskId
+                ? {
+                    ...m,
+                    content: accumulated || '(empty reply)',
+                    streaming: false,
+                  }
+                : m
+            )
+          )
+        }
+      }
 
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
-        const chunk = decoder.decode(value)
-        for (const line of chunk.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          try {
-            const ev = JSON.parse(line.slice(5))
-            if (ev.event === 'token') {
-              accumulated += (ev.token as string).replace(/\\n/g, '\n')
-              setMessages(prev =>
-                prev.map(m => m.taskId === taskId ? { ...m, content: accumulated } : m)
-              )
-            } else if (ev.event === 'done') {
-              setMessages(prev =>
-                prev.map(m => m.taskId === taskId ? { ...m, streaming: false } : m)
-              )
-            }
-          } catch {/* ignore */}
+        lineBuf += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+        const lines = lineBuf.split('\n')
+        lineBuf = lines.pop() ?? ''
+        for (const line of lines) {
+          processSseLine(line)
+        }
+        if (done) {
+          if (lineBuf) processSseLine(lineBuf)
+          break
         }
       }
+
+      if (!sawDone) {
+        applyError(
+          'Stream ended unexpectedly. If using local models, run Ollama and: ollama pull llama3.2'
+        )
+      }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const raw = err instanceof Error ? err.message : String(err)
+      const msg =
+        raw === 'Failed to fetch'
+          ? 'Could not reach the API. Start the backend on port 8000 (uvicorn) and keep Vite dev running.'
+          : raw
       setMessages(prev =>
         prev.map(m =>
           m.taskId === taskId

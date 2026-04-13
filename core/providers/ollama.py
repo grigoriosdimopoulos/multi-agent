@@ -1,11 +1,13 @@
 """
-Ollama Provider — free, fully local inference.
+Ollama Provider — default is free, local inference (no API key).
 
-Requires Ollama running at http://localhost:11434 (or custom base_url).
-Install: https://ollama.com
-Run a model: ollama pull llama3.2
+Typical setup: OLLAMA_HOST=http://localhost:11434, OLLAMA unset/empty.
+Install: https://ollama.com — run `ollama serve`, then `ollama pull <model>`.
+
+Optional: OLLAMA_API_KEY is only for ollama.com’s hosted API, not local :11434.
 """
 import json
+import os
 from typing import AsyncIterator, Optional
 
 import httpx
@@ -14,7 +16,7 @@ from .base import BaseLLMProvider, CompletionResponse, Message, ToolCall
 
 
 class OllamaProvider(BaseLLMProvider):
-    """100 % local, zero-cost LLM inference via Ollama."""
+    """Local or cloud Ollama HTTP API (Bearer auth when OLLAMA_API_KEY is set)."""
 
     provider_name = "ollama"
 
@@ -22,9 +24,25 @@ class OllamaProvider(BaseLLMProvider):
         self,
         model: str = "llama3.2",
         base_url: str = "http://localhost:11434",
+        api_key: Optional[str] = None,
         **kwargs,
     ):
-        super().__init__(model=model, base_url=base_url, **kwargs)
+        super().__init__(model=model, api_key=api_key, base_url=base_url, **kwargs)
+        # Reuse one client so we keep a warm HTTP connection to Ollama (faster TTFT).
+        self._http: httpx.AsyncClient | None = None
+        _key = (api_key or os.getenv("OLLAMA_API_KEY") or "").strip()
+        self._auth_headers: dict[str, str] = {}
+        if _key:
+            self._auth_headers["Authorization"] = f"Bearer {_key}"
+
+    def _ensure_http(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=15.0),
+                limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+                headers=self._auth_headers or None,
+            )
+        return self._http
 
     # ------------------------------------------------------------------
     # Helpers
@@ -56,10 +74,10 @@ class OllamaProvider(BaseLLMProvider):
         if tools:
             payload["tools"] = tools
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(f"{self.base_url}/api/chat", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        client = self._ensure_http()
+        resp = await client.post(f"{self.base_url}/api/chat", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
 
         msg = data.get("message", {})
         tool_calls: list[ToolCall] = []
@@ -96,37 +114,38 @@ class OllamaProvider(BaseLLMProvider):
             "stream": True,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream(
-                "POST", f"{self.base_url}/api/chat", json=payload
-            ) as response:
-                async for line in response.aiter_lines():
-                    if line:
-                        try:
-                            chunk = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if content := chunk.get("message", {}).get("content", ""):
-                            yield content
-                        if chunk.get("done"):
-                            break
+        client = self._ensure_http()
+        async with client.stream(
+            "POST", f"{self.base_url}/api/chat", json=payload
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if line:
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if content := chunk.get("message", {}).get("content", ""):
+                        yield content
+                    if chunk.get("done"):
+                        break
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings using Ollama (requires a model that supports it)."""
         embeddings: list[list[float]] = []
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            for text in texts:
-                resp = await client.post(
-                    f"{self.base_url}/api/embeddings",
-                    json={"model": self.model, "prompt": text},
-                )
-                resp.raise_for_status()
-                embeddings.append(resp.json()["embedding"])
+        client = self._ensure_http()
+        for text in texts:
+            resp = await client.post(
+                f"{self.base_url}/api/embeddings",
+                json={"model": self.model, "prompt": text},
+            )
+            resp.raise_for_status()
+            embeddings.append(resp.json()["embedding"])
         return embeddings
 
     async def list_models(self) -> list[str]:
         """Return all locally available Ollama models."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(f"{self.base_url}/api/tags")
-            resp.raise_for_status()
-            return [m["name"] for m in resp.json().get("models", [])]
+        client = self._ensure_http()
+        resp = await client.get(f"{self.base_url}/api/tags")
+        resp.raise_for_status()
+        return [m["name"] for m in resp.json().get("models", [])]

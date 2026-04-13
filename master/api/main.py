@@ -16,6 +16,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
+
+# Repo root (parent of `master/`) — load .env before reading OLLAMA_HOST etc.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+load_dotenv(_REPO_ROOT / ".env")
+
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -30,12 +36,12 @@ from .routes.tasks import router as tasks_router
 from .routes.knowledge import router as knowledge_router
 from .routes.nodes import router as nodes_router
 from .routes.chat import router as chat_router
-from core.security import verify_api_key, rate_limiter
+from core.security import verify_api_key, rate_limiter, master_api_key_auth_enabled
 
 logger = logging.getLogger(__name__)
 
 AGENTS_CONFIG = os.getenv("AGENTS_CONFIG", "./config/agents.yaml")
-REQUIRE_API_KEY = os.getenv("MASTER_API_KEYS", "") != ""
+REQUIRE_API_KEY = master_api_key_auth_enabled()
 
 
 # -----------------------------------------------------------------------
@@ -95,12 +101,15 @@ app = FastAPI(
 # CORS — allow frontend dev server + same-origin production
 allowed_origins = os.getenv(
     "CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173"
+    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173,"
+    "http://127.0.0.1:3000",
 ).split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=[o.strip() for o in allowed_origins if o.strip()],
+    # Any localhost / loopback port (5173, 4173 preview, etc.)
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -118,8 +127,9 @@ async def security_middleware(request: Request, call_next):
     if not rate_limiter.is_allowed(client_ip):
         return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
 
-    # API key check (skip WebSocket + health)
-    if REQUIRE_API_KEY and request.url.path not in ("/health", "/docs", "/openapi.json"):
+    # API key check (skip WebSocket + health — both /health and /api/health for UI proxy)
+    _public = ("/health", "/api/health", "/docs", "/openapi.json")
+    if REQUIRE_API_KEY and request.url.path not in _public:
         key = request.headers.get("X-API-Key") or request.query_params.get("api_key", "")
         if not verify_api_key(key):
             return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
@@ -140,11 +150,13 @@ app.include_router(chat_router,   prefix="/api")
 
 
 @app.get("/health")
+@app.get("/api/health")
 async def health():
     return {
         "status": "ok",
         "agents": len(app.state.orchestrator.agents),
         "ws_connections": ws_manager.count(),
+        "api_key_required": master_api_key_auth_enabled(),
     }
 
 

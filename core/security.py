@@ -28,6 +28,11 @@ def _load_api_keys() -> set[str]:
     return {k.strip() for k in raw.split(",") if k.strip()}
 
 
+def master_api_key_auth_enabled() -> bool:
+    """True when at least one non-empty key is configured (not merely a non-empty env string)."""
+    return bool(_load_api_keys())
+
+
 def verify_api_key(key: str) -> bool:
     """Constant-time comparison against all registered API keys."""
     allowed = _load_api_keys()

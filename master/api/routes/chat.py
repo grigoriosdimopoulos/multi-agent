@@ -1,6 +1,8 @@
-"""Chat route — submit a message, get SSE-streamed response."""
-import asyncio
+"""Chat route — submit a message, get SSE-streamed response with full tool use."""
+import json
+import re
 import uuid
+from datetime import datetime
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,12 +10,38 @@ from fastapi.responses import StreamingResponse
 
 from ..models import ChatRequest, ChatMessage
 from ..websocket_manager import ws_manager
+from core.orchestrator import TaskStatus
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+# Patterns that indicate a knowledge-base lookup vs a file/greeting
+_GREETING_RE = re.compile(
+    r"^\s*(hi|hello|hey|γεια|γεια\s*σου|καλημέρα|καλησπέρα|what can you do|τι μπορείς)\b",
+    re.IGNORECASE,
+)
+_FILE_ACTION_RE = re.compile(
+    r"\b(list|read|write|open|show\s+files|ls|delete|create\s+file|fetch|http)"
+    r"|(/Users/|~/|\.\.?/|\\)",
+    re.IGNORECASE,
+)
+
+
+def _should_auto_search_kb(message: str) -> bool:
+    """Heuristic: anything that isn't a greeting or explicit file operation
+    is likely a question the knowledge base might answer."""
+    if _GREETING_RE.search(message):
+        return False
+    if _FILE_ACTION_RE.search(message):
+        return False
+    return True
 
 
 def get_orchestrator(request: Request):
     return request.app.state.orchestrator
+
+
+def _sse_event(payload: dict) -> bytes:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
 @router.post("/")
@@ -33,10 +61,14 @@ async def chat(body: ChatRequest, orch=Depends(get_orchestrator)):
         return StreamingResponse(
             _stream_response(body, orch, task_id),
             media_type="text/event-stream",
-            headers={"X-Task-Id": task_id},
+            headers={
+                "X-Task-Id": task_id,
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
 
-    # Non-streaming: run and return full result
     task = await orch.run_task(
         input_text=body.message,
         agent_id=body.agent_id,
@@ -57,42 +89,94 @@ async def _stream_response(
     orch,
     task_id: str,
 ) -> AsyncIterator[bytes]:
-    """Yield SSE events for each token."""
+    """
+    Run the agent's full ReAct loop (with tools) and stream progress as SSE.
+
+    Auto-searches the knowledge base for question-like messages before handing
+    off to the LLM so the model always has relevant context.
+    """
     agent = None
     if body.agent_id and body.agent_id in orch.agents:
         agent = orch.agents[body.agent_id]
     elif orch.agents:
         agent = next(iter(orch.agents.values()))
     else:
-        yield b"data: {\"error\": \"No agent available\"}\n\n"
+        yield _sse_event({"event": "error", "error": "No agent available"})
         return
 
-    yield f"data: {{\"event\": \"start\", \"task_id\": \"{task_id}\"}}\n\n".encode()
+    agent.reset_memory()
 
-    full_response = ""
+    yield _sse_event({"event": "start", "task_id": task_id})
+
+    # --- Auto-inject KB context for question-like messages ----------------
+    kb_context = ""
+    if _should_auto_search_kb(body.message):
+        kb_tool = agent._tool_map.get("query_knowledge_base")
+        if kb_tool:
+            try:
+                yield _sse_event({
+                    "event": "thinking",
+                    "tool": "query_knowledge_base",
+                    "arguments": {"query": body.message},
+                })
+                kb_result = await kb_tool.execute(query=body.message)
+                if kb_result.success and kb_result.output:
+                    chunks = kb_result.output
+                    if isinstance(chunks, list) and chunks:
+                        parts = []
+                        for c in chunks[:5]:
+                            text = c.get("content", "") if isinstance(c, dict) else str(c)
+                            score = c.get("score", 0) if isinstance(c, dict) else 0
+                            if score > -0.1:
+                                parts.append(text[:500])
+                        if parts:
+                            kb_context = (
+                                "\n\n--- KNOWLEDGE BASE RESULTS ---\n"
+                                + "\n---\n".join(parts)
+                                + "\n--- END OF KB RESULTS ---\n"
+                            )
+            except Exception:
+                pass
+
     try:
-        async for token in agent.stream(body.message):
-            full_response += token
-            # SSE format: data: <payload>\n\n
-            safe = token.replace("\n", "\\n").replace('"', '\\"')
-            yield f"data: {{\"event\": \"token\", \"token\": \"{safe}\"}}\n\n".encode()
-            # Also push to WebSocket clients
-            await ws_manager.send_token(body.session_id, token, task_id)
+        enriched_message = body.message
+        if kb_context:
+            enriched_message = (
+                body.message
+                + "\n\n[The following was automatically retrieved from the knowledge base. "
+                "Use it to answer the question. If the results are not relevant, say so.]\n"
+                + kb_context
+            )
+
+        result = await agent.run(enriched_message)
+
+        if not result.success and result.error:
+            yield _sse_event({"event": "error", "error": result.error})
+            return
+
+        if result.tool_calls:
+            for tc in result.tool_calls:
+                yield _sse_event({
+                    "event": "thinking",
+                    "tool": tc["name"],
+                    "arguments": tc.get("arguments", {}),
+                })
+
+        content = result.content or "(empty reply)"
+        yield _sse_event({"event": "token", "token": content})
+
     except Exception as exc:
-        yield f"data: {{\"event\": \"error\", \"error\": \"{str(exc)}\"}}\n\n".encode()
+        yield _sse_event({"event": "error", "error": str(exc)})
         return
 
-    yield f"data: {{\"event\": \"done\", \"task_id\": \"{task_id}\"}}\n\n".encode()
+    yield _sse_event({"event": "done", "task_id": task_id})
 
-    # Record as completed task
-    from datetime import datetime
-    from core.orchestrator import TaskStatus
     task = TaskStatus(
         task_id=task_id,
         status="completed",
         agent_id=agent.id,
         input=body.message,
-        output=full_response,
+        output=content,
     )
     task.completed_at = datetime.utcnow()
     orch.tasks[task_id] = task

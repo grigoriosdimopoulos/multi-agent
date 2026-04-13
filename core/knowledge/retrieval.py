@@ -3,7 +3,10 @@ Knowledge retrieval — cosine-similarity search over ChromaDB collections.
 """
 from typing import Optional
 
+from .embeddings import OllamaEmbeddingFunction
 from .ingestion import get_chroma_client
+
+_ollama_ef = OllamaEmbeddingFunction()
 
 
 async def retrieve(
@@ -16,7 +19,9 @@ async def retrieve(
     """Return the top-n most relevant document chunks for *query*."""
     client = get_chroma_client(persist_directory)
     try:
-        collection = client.get_collection(collection_name)
+        collection = client.get_collection(
+            collection_name, embedding_function=_ollama_ef,
+        )
     except Exception:
         return []
 

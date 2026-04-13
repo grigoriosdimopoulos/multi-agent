@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/
+workspace/
+master/frontend/node_modules/
+master/frontend/dist/
+master/frontend/package-lock.json
+.DS_Store

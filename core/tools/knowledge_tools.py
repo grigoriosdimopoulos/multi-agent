@@ -42,8 +42,12 @@ class QueryKnowledgeBaseTool(BaseTool):
         }
 
     async def execute(
-        self, query: str, collection: str = "default", n_results: int = 5
+        self, query: str, collection: str = "default", n_results=5,
     ) -> ToolResult:
+        try:
+            n_results = int(n_results)
+        except (TypeError, ValueError):
+            n_results = 5
         if not self._retrieval_fn:
             return ToolResult(
                 success=False,

@@ -7,6 +7,8 @@ Orchestrator via Redis.
 """
 import asyncio
 import logging
+import os
+import platform
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -104,6 +106,23 @@ class Orchestrator:
         self._log.info("Registered chain '%s'", chain.chain_id)
 
     # ------------------------------------------------------------------
+    # Prompt variable expansion
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _expand_prompt_vars(prompt: str) -> str:
+        """Replace ${VAR} placeholders with real OS / user context."""
+        home = os.path.expanduser("~")
+        replacements = {
+            "HOME_DIR": home,
+            "USER_NAME": os.getenv("USER") or os.getenv("USERNAME") or "user",
+            "OS_NAME": f"{platform.system()} ({platform.platform()})",
+        }
+        for key, value in replacements.items():
+            prompt = prompt.replace(f"${{{key}}}", value)
+        return prompt
+
+    # ------------------------------------------------------------------
     # Dynamic agent creation from YAML / API config dict
     # ------------------------------------------------------------------
 
@@ -115,11 +134,15 @@ class Orchestrator:
         Optional: tools, system_prompt, temperature, privilege_level, description
         """
         prov_cfg = cfg["provider"]
+        base_url = prov_cfg.get("base_url")
+        if prov_cfg["type"] == "ollama":
+            # Docker / .env set OLLAMA_HOST; YAML often hardcodes localhost.
+            base_url = os.environ.get("OLLAMA_HOST") or base_url or "http://localhost:11434"
         provider = create_provider(
             provider_type=prov_cfg["type"],
             model=prov_cfg.get("model", ""),
             api_key=prov_cfg.get("api_key"),
-            base_url=prov_cfg.get("base_url"),
+            base_url=base_url,
         )
 
         tool_names: list[str] = cfg.get("tools", [])
@@ -136,15 +159,16 @@ class Orchestrator:
             kb_tool = QueryKnowledgeBaseTool(retrieval_fn=_retrieve)
             tools.append(kb_tool)
 
+        raw_prompt = cfg.get("system_prompt", "You are a helpful AI assistant.")
+        system_prompt = self._expand_prompt_vars(raw_prompt)
+
         agent_cfg = AgentConfig(
             agent_id=cfg.get("id", str(uuid.uuid4())),
             name=cfg["name"],
             description=cfg.get("description", ""),
             provider=provider,
             tools=tools,
-            system_prompt=cfg.get(
-                "system_prompt", "You are a helpful AI assistant."
-            ),
+            system_prompt=system_prompt,
             max_iterations=cfg.get("max_iterations", 10),
             temperature=cfg.get("temperature", 0.7),
             max_tokens=cfg.get("max_tokens", 4096),

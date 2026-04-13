@@ -74,11 +74,19 @@ class Agent:
 
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
-        self.memory = ConversationMemory(system_prompt=config.system_prompt)
         self._tool_map: dict[str, BaseTool] = {}
         for tool in config.tools:
             if PrivilegeLevel.can_use_tool(config.privilege_level, tool.name):
                 self._tool_map[tool.name] = tool
+
+        # Append available tool names to the system prompt so the model can
+        # answer "what tools do you have?" without needing to call one.
+        enriched_prompt = config.system_prompt
+        if self._tool_map:
+            tool_list = ", ".join(self._tool_map.keys())
+            enriched_prompt += f"\n\nYou have these tools available: {tool_list}"
+
+        self.memory = ConversationMemory(system_prompt=enriched_prompt)
         self._log = logging.getLogger(f"agent.{config.agent_id}")
 
     # ------------------------------------------------------------------
@@ -121,14 +129,21 @@ class Agent:
         all_tool_calls: list[dict] = []
         iterations = 0
 
+        tools_used_this_turn = False
+
         try:
             while iterations < self.config.max_iterations:
                 iterations += 1
                 messages = self.memory.get_messages()
 
+                # After tools have been called, omit tool schemas so the model
+                # is forced to produce a plain-text answer (small models like
+                # llama3.2 otherwise loop calling tools indefinitely).
+                send_tools = tool_schemas if (not tools_used_this_turn and tool_schemas) else None
+
                 response = await self.config.provider.complete(
                     messages=messages,
-                    tools=tool_schemas or None,
+                    tools=send_tools,
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
                 )
@@ -156,8 +171,14 @@ class Agent:
                                 f"[Tool: {tc.name}] ERROR: Tool not available to this agent."
                             )
 
-                    self.memory.add("user", "Tool results:\n" + "\n".join(tool_results))
-                    continue  # loop back for LLM to process results
+                    tool_output = "Tool results:\n" + "\n".join(tool_results)
+                    tool_output += (
+                        "\n\nNow provide a helpful plain-text reply based on "
+                        "the results above."
+                    )
+                    self.memory.add("user", tool_output)
+                    tools_used_this_turn = True
+                    continue  # loop back — tools omitted so model must answer
 
                 # --- Final answer -----------------------------------------
                 final = redact_secrets(response.content)

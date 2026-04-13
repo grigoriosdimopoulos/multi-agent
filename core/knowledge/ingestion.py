@@ -14,6 +14,10 @@ from typing import Optional
 import chromadb
 from chromadb.config import Settings
 
+from .embeddings import OllamaEmbeddingFunction
+
+_ollama_ef = OllamaEmbeddingFunction()
+
 SUPPORTED_EXTENSIONS = {
     ".txt", ".md", ".py", ".js", ".ts", ".json",
     ".yaml", ".yml", ".csv", ".rst", ".html", ".xml",
@@ -121,6 +125,7 @@ async def ingest_file(
     collection = client.get_or_create_collection(
         name=collection_name,
         metadata={"hnsw:space": "cosine"},
+        embedding_function=_ollama_ef,
     )
 
     doc_ids = [f"{path.stem}_c{i}" for i in range(len(chunks))]

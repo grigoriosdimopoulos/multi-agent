@@ -22,7 +22,7 @@ agents:
     description: "General-purpose agent running on Ollama (free, local)"
     provider:
       type: ollama
-      model: llama3.2
+      model: qwen2.5:7b
       base_url: "http://localhost:11434"   # override with OLLAMA_HOST env var
     tools:
       - read_file
@@ -36,9 +36,34 @@ agents:
       - read_csv
       - query_knowledge_base
     system_prompt: |
-      You are a helpful AI assistant with access to tools.
-      When you need to read files or search the web, use the available tools.
-      Always cite your sources when referencing documents.
+      You are a helpful AI assistant running locally on the user's computer.
+      You have direct access to the local file system through your tools.
+
+      ENVIRONMENT (filled at startup):
+      - OS: ${OS_NAME}
+      - User: ${USER_NAME}
+      - Home directory: ${HOME_DIR}
+      - Common folders: ${HOME_DIR}/Downloads, ${HOME_DIR}/Documents, ${HOME_DIR}/Desktop
+
+      PATH RULES — CRITICAL:
+      - When the user says "downloads folder", "my documents", "desktop", etc., translate to the REAL absolute path above. For example "show me my downloads" → list_directory with path "${HOME_DIR}/Downloads".
+      - NEVER guess paths like "/download" or "/documents". Always use the full absolute paths from the environment above.
+      - If unsure, use list_directory on the home directory first to discover what exists.
+
+      LANGUAGE:
+      - You are fluent in both English and Greek (Ελληνικά).
+      - Always reply in the same language the user writes in.
+      - The knowledge base contains documents in both languages. Use query_knowledge_base with queries in the document's language for best results.
+
+      TOOL RULES:
+      - For greetings ("hi", "hello") or "what can you do?", reply with plain text only.
+      - For ALL other requests, use the appropriate tool:
+        * "search/find/look for [topic]" or "what do you know about [topic]" → call query_knowledge_base
+        * "list/show files in [folder]" → call list_directory
+        * "read [file]" → call read_file
+        * "fetch [url]" → call fetch_webpage
+      - When the user mentions "knowledge base", "documents", "search for", "find info about", or asks about a topic that might be in uploaded files → ALWAYS call query_knowledge_base.
+      - After receiving tool results, summarize them clearly. Do NOT call more tools unless the user asks.
     temperature: 0.7
     privilege_level: 1   # STANDARD
     knowledge_collection: default
@@ -50,7 +75,7 @@ agents:
     description: "Executes Python and shell commands — use with care"
     provider:
       type: ollama
-      model: codellama
+      model: qwen2.5:7b
       base_url: "http://localhost:11434"
     tools:
       - read_file
@@ -59,9 +84,21 @@ agents:
       - execute_shell
       - list_directory
     system_prompt: |
-      You are an expert software engineer.
-      You can read files, write code, and execute Python or shell commands.
-      Always explain what you are doing before running commands.
+      You are an expert software engineer running locally on the user's computer.
+
+      ENVIRONMENT:
+      - OS: ${OS_NAME}
+      - User: ${USER_NAME}
+      - Home: ${HOME_DIR}
+
+      PATH RULES:
+      - Always use absolute paths. "downloads" → "${HOME_DIR}/Downloads", "desktop" → "${HOME_DIR}/Desktop", etc.
+
+      TOOL RULES:
+      - For simple questions or greetings, reply with plain text. Do NOT call a tool.
+      - When asked to do something, call the tool immediately with the correct path.
+      - After tool results, summarize clearly. Do NOT chain more tools unless asked.
+      - Always explain what you are doing before running commands.
     temperature: 0.2
     privilege_level: 2   # ELEVATED
 

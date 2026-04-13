@@ -69,5 +69,11 @@ export const api = {
   }),
 
   // Health
-  health: () => req<{ status: string; agents: number; ws_connections: number }>('/health').catch(() => null),
+  health: () =>
+    req<{
+      status: string
+      agents: number
+      ws_connections: number
+      api_key_required?: boolean
+    }>('/health').catch(() => null),
 }
