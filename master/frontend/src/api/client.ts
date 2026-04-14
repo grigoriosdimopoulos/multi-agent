@@ -3,6 +3,7 @@ import type {
   Chain,
   Task,
   NodeInfo,
+  NodeConfigUpdate,
   KnowledgeCollection,
 } from '../types'
 
@@ -22,7 +23,6 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
-// ---- Agents ----
 export const api = {
   // Agents
   listAgents: () => req<Agent[]>('/agents/'),
@@ -38,9 +38,17 @@ export const api = {
   listTasks:  (status?: string) => req<Task[]>(`/tasks/${status ? `?status=${status}` : ''}`),
   getTask:    (id: string) => req<Task>(`/tasks/${id}`),
   submitTask: (body: unknown) => req<Task>('/tasks/', { method: 'POST', body: JSON.stringify(body) }),
+  cancelTask: (id: string) => req<void>(`/tasks/${id}`, { method: 'DELETE' }),
 
   // Nodes
-  listNodes: () => req<NodeInfo[]>('/nodes/'),
+  listNodes:    () => req<NodeInfo[]>('/nodes/'),
+  getNode:      (id: string) => req<NodeInfo>(`/nodes/${id}`),
+  configureNode:(id: string, body: NodeConfigUpdate) =>
+    req<{ node_id: string; agents_pushed: number; chains_pushed: number }>(
+      `/nodes/${id}/config`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  getNodeConfig:(id: string) => req<NodeConfigUpdate>(`/nodes/${id}/config`),
 
   // Knowledge
   listCollections: () => req<KnowledgeCollection[]>('/knowledge/collections'),
@@ -73,6 +81,7 @@ export const api = {
     req<{
       status: string
       agents: number
+      tasks_tracked: number
       ws_connections: number
       api_key_required?: boolean
     }>('/health').catch(() => null),

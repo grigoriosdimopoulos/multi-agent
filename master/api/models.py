@@ -66,8 +66,12 @@ class TaskCreateRequest(BaseModel):
     input: str
     agent_id: Optional[str] = None
     chain_id: Optional[str] = None
-    node_id: Optional[str] = None   # target node (None = any available)
+    node_id: Optional[str] = None        # target node (None = broadcast to all)
     recursive: bool = False
+    required_tools: list[str] = []       # tools the node must enable for this task
+    privilege_level: int = 1             # privilege level granted to agent for this task
+    prerequisites: list[str] = []       # task_ids that must complete before this runs
+    chain_config: Optional[dict] = None  # inline chain: {mode, agent_ids, merge_agent_id}
 
 
 class TaskResponse(BaseModel):
@@ -75,13 +79,16 @@ class TaskResponse(BaseModel):
     status: str
     agent_id: Optional[str] = None
     chain_id: Optional[str] = None
+    node_id: Optional[str] = None
     input: str
     output: Optional[str] = None
     error: Optional[str] = None
-    created_at: datetime
-    completed_at: Optional[datetime] = None
+    created_at: str                      # ISO string (simpler for cross-process sharing)
+    completed_at: Optional[str] = None
     iterations: int = 0
     subtask_ids: list[str] = []
+    required_tools: list[str] = []
+    privilege_level: int = 1
 
 
 # -----------------------------------------------------------------------
@@ -135,8 +142,18 @@ class NodeInfo(BaseModel):
     port: int
     status: str = "active"
     agent_ids: list[str] = []
+    agent_configs: list[dict] = []       # full agent config objects stored at master
     capabilities: dict = {}
     last_seen: datetime = Field(default_factory=datetime.utcnow)
+    tasks_completed: int = 0
+    tasks_running: int = 0
+
+
+class NodeConfigUpdate(BaseModel):
+    """Sent via Redis to dynamically reconfigure a node."""
+    agents: list[dict] = []             # list of agent config dicts (same format as agents.yaml)
+    chains: list[dict] = []             # list of chain config dicts
+    allowed_tools: list[str] = []       # restrict available tools on this node
 
 
 # -----------------------------------------------------------------------
