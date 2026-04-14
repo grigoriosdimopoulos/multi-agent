@@ -86,8 +86,8 @@ export default function App() {
         <main className="flex-1 overflow-hidden">
           {view === 'chat'      && <ChatWindow agents={agents} chains={chains} streamingTokens={streamingTokens} sessionId={SESSION_ID} />}
           {view === 'agents'    && <AgentPanel agents={agents} onRefresh={loadAgents} />}
-          {view === 'nodes'     && <NodeMap nodes={nodes} />}
-          {view === 'tasks'     && <TaskQueue tasks={tasks} onRefresh={loadTasks} />}
+          {view === 'nodes'     && <NodeMap nodes={nodes} agents={agents} onRefresh={loadNodes} />}
+          {view === 'tasks'     && <TaskQueue tasks={tasks} nodes={nodes} agents={agents} onRefresh={loadTasks} />}
           {view === 'knowledge' && <KnowledgeUpload collections={collections} onRefresh={loadCollections} />}
         </main>
       </div>
